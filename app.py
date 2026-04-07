@@ -1516,6 +1516,20 @@ class LSTMWorkbenchGUI:
             weight_pairs = list(
                 zip(feature_cols, grad, signed_grad))
             weight_pairs.sort(key=lambda x: x[1], reverse=True)
+            fi_max_imp = max((wp[1] for wp in weight_pairs), default=0.0)
+            fi_tiny_eps = 1e-12
+            fi_top_pairs = weight_pairs[:8]
+            fi_top_up = max(
+                (wp for wp in fi_top_pairs if wp[2] > 0),
+                key=lambda x: x[1],
+                default=None,
+            )
+            fi_top_down = max(
+                (wp for wp in fi_top_pairs if wp[2] < 0),
+                key=lambda x: x[1],
+                default=None,
+            )
+            fi_strongest = fi_top_pairs[0] if fi_top_pairs else None
 
             # ── 9  Header metrics (Evaluation cards) ───────────────────
             if hasattr(self, "eval_accuracy_label"):
@@ -1791,6 +1805,27 @@ class LSTMWorkbenchGUI:
             self._log(
                 f"    * Predicted next-day move: {pred_pct:+.2f}%"
             )
+            weak_signal_suffix = " (weak signal)" if fi_max_imp <= fi_tiny_eps else ""
+            if fi_top_up is not None:
+                up_name = FEATURE_DISPLAY.get(fi_top_up[0], fi_top_up[0])
+                up_pct = (
+                    (fi_top_up[1] / fi_max_imp) * 100.0
+                    if fi_max_imp > fi_tiny_eps
+                    else 0.0
+                )
+                self._log(
+                    f"    * Best pull-up feature: {up_name}{weak_signal_suffix}"
+                )
+            if fi_top_down is not None:
+                down_name = FEATURE_DISPLAY.get(fi_top_down[0], fi_top_down[0])
+                down_pct = (
+                    (fi_top_down[1] / fi_max_imp) * 100.0
+                    if fi_max_imp > fi_tiny_eps
+                    else 0.0
+                )
+                self._log(
+                    f"    * Best drawdown feature: {down_name}{weak_signal_suffix}"
+                )
             self._log(
                 "    * 3 months support/resistance: "
                 + (f"{sr_3m_support:.2f}" if sr_3m_support is not None else "N/A")
@@ -1811,7 +1846,7 @@ class LSTMWorkbenchGUI:
             )
             if dist_to_support_pct is not None or dist_to_resistance_pct is not None:
                 self._log(
-                    "    * Proximity to levels: "
+                    "    * Proximity to closest support/resistances: "
                     + (
                         f"{dist_to_support_pct:.2f}% above support"
                         if dist_to_support_pct is not None
@@ -1829,83 +1864,79 @@ class LSTMWorkbenchGUI:
                 f"  - GENERIC OUTLOOK: {risk_label} ({confidence_label} confidence)",
                 "summary",
             )
-            self._log(
-                "    This is a directional aid based on model behavior and key levels, "
-                "not financial advice.",
-                risk_tag,
-            )
 
             # -- Feature Importance (gradient-based, user-friendly) --
             self._section("FEATURE IMPORTANCE")
             if not weight_pairs:
                 self._log("  No feature attribution data available.")
             else:
-                max_imp = max((wp[1] for wp in weight_pairs), default=0.0)
-                top_pairs = weight_pairs[:8]
-                tiny_eps = 1e-12
+                top_pairs = fi_top_pairs
+                top_up = fi_top_up
+                top_down = fi_top_down
+                strongest_name = FEATURE_DISPLAY.get(top_pairs[0][0], top_pairs[0][0])
 
-                if max_imp <= tiny_eps:
+                if fi_max_imp <= fi_tiny_eps:
                     self._log("  Attribution signal is near zero across all features.")
                     self._log("  Interpretation: output is not strongly sensitive to inputs in this sample.")
-                else:
-                    top_up = max((wp for wp in top_pairs if wp[2] > 0), key=lambda x: x[1], default=None)
-                    top_down = max((wp for wp in top_pairs if wp[2] < 0), key=lambda x: x[1], default=None)
-                    strongest_name = FEATURE_DISPLAY.get(top_pairs[0][0], top_pairs[0][0])
 
-                    self._log(f"  Most influential overall: {strongest_name}")
-                    if top_up is not None:
-                        self._log(
-                            f"  Top upward driver: {FEATURE_DISPLAY.get(top_up[0], top_up[0])}"
-                        )
-                    if top_down is not None:
-                        self._log(
-                            f"  Top downward driver: {FEATURE_DISPLAY.get(top_down[0], top_down[0])}"
-                        )
-                    self._log("")
+                self._log(f"  Most influential overall feature: {strongest_name}")
+                if top_up is not None:
                     self._log(
-                        f"  {'#':>2}  {'Feature':<30} {'Impact Score':<25} "
-                        f"{'Influence':<26} {'Confidence':<10}"
+                        f"  Top upward feature: {FEATURE_DISPLAY.get(top_up[0], top_up[0])}"
                     )
+                if top_down is not None:
                     self._log(
-                        "  " + "-" * 2 + "  " + "-" * 30 + " " + "-" * 25 + " "
-                        + "-" * 26 + " " + "-" * 10
+                        f"  Top downward feature: {FEATURE_DISPLAY.get(top_down[0], top_down[0])}"
                     )
-                    self._log("")
-                    for rank, (fname, imp, signed) in enumerate(top_pairs, 1):
-                        display = FEATURE_DISPLAY.get(fname, fname)
+                self._log("")
+                self._log(
+                    f"  {'#':>2}  {'Feature':<30} {'Impact Score':<25} "
+                    f"{'Influence':<26} {'Confidence':<10}"
+                )
+                self._log(
+                    "  " + "-" * 2 + "  " + "-" * 30 + " " + "-" * 25 + " "
+                    + "-" * 26 + " " + "-" * 10
+                )
+                self._log("")
+                for rank, (fname, imp, signed) in enumerate(top_pairs, 1):
+                    display = FEATURE_DISPLAY.get(fname, fname)
 
-                        rel_pct = (imp / max_imp) * 100.0
-                        bar_len = int((rel_pct / 100.0) * 16)
-                        bar_len = max(0, min(16, bar_len))
-                        bar = "#" * bar_len + "." * (16 - bar_len)
-                        impact_score = int(round(rel_pct))
+                    rel_pct = (
+                        (imp / fi_max_imp) * 100.0
+                        if fi_max_imp > 0
+                        else 0.0
+                    )
+                    bar_len = int((rel_pct / 100.0) * 16)
+                    bar_len = max(0, min(16, bar_len))
+                    bar = "#" * bar_len + "." * (16 - bar_len)
+                    impact_score = int(round(rel_pct))
 
-                        if signed > 0:
-                            direction = "Pushes forecast up"
-                            tag = "green"
-                        elif signed < 0:
-                            direction = "Pushes forecast down"
-                            tag = "red"
-                        else:
-                            direction = "No clear directional push"
-                            tag = "yellow"
+                    if signed > 0:
+                        direction = "Pushes forecast up"
+                        tag = "green"
+                    elif signed < 0:
+                        direction = "Pushes forecast down"
+                        tag = "red"
+                    else:
+                        direction = "No clear directional push"
+                        tag = "yellow"
 
-                        if rel_pct >= 70:
-                            strength = "Strong"
-                        elif rel_pct >= 35:
-                            strength = "Notable"
-                        elif rel_pct >= 10:
-                            strength = "Modest"
-                        else:
-                            strength = "Minimal"
+                    if rel_pct >= 70:
+                        strength = "Strong"
+                    elif rel_pct >= 35:
+                        strength = "Notable"
+                    elif rel_pct >= 10:
+                        strength = "Modest"
+                    else:
+                        strength = "Minimal"
 
-                        self._log(
-                            f"  {rank:>2}  {display:<30} [{bar}] {impact_score:>3}/100   "
-                            f"{direction:<26} {strength:<10}",
-                            tag,
-                        )
-                    self._log("")
-                    self._log("  Note: Impact Score is normalized to the strongest feature in this run.")
+                    self._log(
+                        f"  {rank:>2}  {display:<30} [{bar}] {impact_score:>3}/100   "
+                        f"{direction:<26} {strength:<10}",
+                        tag,
+                    )
+                self._log("")
+                self._log("  Note: Impact Score is normalized to the strongest feature in this run.")
 
             # -- Current Prediction --
             self._section("CURRENT MODEL PREDICTION")
